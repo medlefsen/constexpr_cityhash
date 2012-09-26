@@ -9,10 +9,12 @@ static const uint64_t k2 = 0x9ae16a3b2f90404fULL;
 static const uint64_t k3 = 0xc949d7c7509e6557ULL;
 namespace detail
 {
+
 constexpr uint64_t shift64(uint64_t v, int b)
 {
   return v << (b*8);
 }
+
 constexpr uint32_t shift32(uint32_t v, int b)
 {
   return v << (b*8);
@@ -47,6 +49,14 @@ constexpr uint64_t ShiftMix(uint64_t val) {
 constexpr uint64_t RotateByAtLeast1(uint64_t val, int shift) {
   return (val >> shift) | (val << (64 - shift));
 }
+
+// Bitwise right rotate.  Normally this will compile to a single
+// instruction, especially if the shift is a manifest constant.
+constexpr uint64_t Rotate(uint64_t val, int shift) {
+  // Avoid shifting by 64: doing so yields an undefined result.
+  return shift == 0 ? val : ((val >> shift) | (val << (64 - shift)));
+}
+
 
 constexpr uint64_t bor_shift47(uint64_t n)
 {
@@ -90,6 +100,155 @@ constexpr uint64_t HashLen0to16(const char *s, size_t len) {
         )
       );
 }
+
+constexpr uint64_t HashLen17to32_impl(uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t len) {
+  return HashLen16(Rotate(a - b, 43) + Rotate(c, 30) + d,
+                   a + Rotate(b ^ k3, 20) - c + len);
+}
+// This probably works well for 16-byte strings as well, but it may be overkill
+// in that case.
+constexpr uint64_t HashLen17to32(const char *s, size_t len) {
+  return HashLen17to32_impl(load64(s) * k1,
+                            load64(s + 8),
+                            load64(s + len - 8) * k2,
+                            load64(s + len - 16) * k0,
+                            len);
+}
+
+constexpr uint64_t HashLen33to64_6(uint64_t vf, uint64_t vs, uint64_t wf, uint64_t ws) {
+  return ShiftMix(ShiftMix((vf + ws) * k2 + (wf + vs) * k0) * k0 + vs) * k2;
+}
+
+constexpr uint64_t HashLen33to64_5(
+    uint64_t z,
+    uint64_t b,
+    uint64_t c2,
+    uint64_t a3,
+    uint64_t z2,
+    uint64_t b2,
+    uint64_t c4,
+    uint64_t a6
+    ) {
+  //uint64 vf = a3 + z;                 // a3, z
+  //uint64 vs = b + Rotate(a3, 31) + c2; // b, a3, c2
+  //uint64 wf = a6 + z2;               // a6, z2
+  //uint64 ws = b2 + Rotate(a6, 31) + c4; // b2, a6, c4
+  return HashLen33to64_6(a3 + z,b + Rotate(a3, 31) + c2,a6 + z2,b2 + Rotate(a6, 31) + c4);
+}
+
+constexpr uint64_t HashLen33to64_4(const char *s, size_t len,
+    uint64_t z,
+    uint64_t b,
+    uint64_t c2,
+    uint64_t a3,
+    uint64_t z2,
+    uint64_t b2,
+    uint64_t c3,
+    uint64_t a5
+    ) {
+  //uint64 c4 = c3 + Rotate(a5, 7);    // c3, a5 - c3
+  //uint64 a6 = a5 + load64(s + len - 16); // a5 - a5
+  return HashLen33to64_5(
+      z, //z
+      b, //b
+      c2, //c2
+      a3, //a3
+      z2, //z2
+      b2, //b2
+      c3 + Rotate(a5, 7), //c4
+      a5 + load64(s + len - 16)); //a6
+}
+
+constexpr uint64_t HashLen33to64_3(const char *s, size_t len,
+    uint64_t z,
+    uint64_t b,
+    uint64_t c2,
+    uint64_t a3,
+    uint64_t a4,
+    uint64_t z2
+    ) {
+  //uint64 b2 = Rotate(a4 + z2, 52);  // a4, z2
+  //uint64 c3 = Rotate(a4, 37);       // a4
+  //uint64 a5 = a4 + load64(s + len - 24); // a4 - a4
+  return HashLen33to64_4(s,len,
+      z, //z
+      b, //b
+      c2, //c2
+      a3, //a3
+      z2, //z2
+      Rotate(a4 + z2, 52), //b2
+      Rotate(a4, 37), //c3
+      a4 + load64(s + len - 24)); //a5
+}
+
+constexpr uint64_t HashLen33to64_2(const char *s, size_t len,
+    uint64_t z,
+    uint64_t b,
+    uint64_t c,
+    uint64_t a2
+    ) {
+  //uint64 c2 = c + Rotate(a2, 7);      // c, a2 - c
+  //uint64 a3 = a2 + load64(s + 16);   // a2 - a2
+  //uint64 a4 = load64(s + 16) + load64(s + len - 32); //
+  //uint64 z2 = load64(s + len - 8); //
+  return HashLen33to64_3(s,len,
+      z, //z
+      b, //b
+      c + Rotate(a2, 7), //c2
+      a2 + load64(s + 16), //a3
+      load64(s + 16) + load64(s + len - 32), //a4
+      load64(s + len - 8)); //z2
+}
+
+constexpr uint64_t HashLen33to64_1(const char *s, size_t len,
+    uint64_t z,
+    uint64_t a
+    ) {
+  //uint64 b = Rotate(a + z, 52);       // a, z
+  //uint64 c = Rotate(a, 37);           // a
+  //uint64 a2 = a + load64(s + 8);     // a - a
+  return HashLen33to64_2(s,len,
+      z, //z
+      Rotate(a + z, 52), //b
+      Rotate(a, 37), //c
+      a + load64(s + 8)); //a2
+}
+
+constexpr uint64_t HashLen33to64_0(const char *s, size_t len) {
+  //uint64 z = Fetch64(s + 24);
+  //uint64 a = Fetch64(s) + (len + Fetch64(s + len - 16)) * k0;
+  return HashLen33to64_1(s,len,load64(s + 24),load64(s) + (len + load64(s + len - 16)) * k0);
+}
+
+/*
+  uint64 z = Fetch64(s + 24); //
+  uint64 a = Fetch64(s) + (len + Fetch64(s + len - 16)) * k0; //
+  uint64 b = Rotate(a + z, 52);       // a, z
+  uint64 c = Rotate(a, 37);           // a
+  uint64 a2 = a + load64(s + 8);     // a - a
+  uint64 c2 = c + Rotate(a2, 7);      // c, a2 - c
+  uint64 a3 = a2 + load64(s + 16);   // a2 - a2
+  uint64 a4 = load64(s + 16) + load64(s + len - 32); //
+  uint64 z2 = load64(s + len - 8); //
+  uint64 b2 = Rotate(a4 + z2, 52);  // a4, z2
+  uint64 c3 = Rotate(a4, 37);       // a4
+  uint64 a5 = a4 + load64(s + len - 24); // a4 - a4
+  uint64 c4 = c3 + Rotate(a5, 7);    // c3, a5 - c3
+  uint64 a6 = a5 + load64(s + len - 16); // a5 - a5
+
+  // a3, z, b, c2, a6, z2, b2, c4
+  uint64 vf = a3 + z;                 // a3, z
+  uint64 vs = b + Rotate(a3, 31) + c2; // b, a3, c2
+  uint64 wf = a6 + z2;               // a6, z2
+  uint64 ws = b2 + Rotate(a6, 31) + c4; // b2, a6, c4
+
+  // vf, vs, wf, ws
+  return ShiftMix(ShiftMix((vf + ws) * k2 + (wf + vs) * k0) * k0 + vs) * k2;
+
+*/
+constexpr uint64_t HashLen33to64(const char *s, size_t len) {
+  return HashLen33to64_0(s,len);
+}
 }
 
 constexpr std::uint64_t CityHash64(const char *s, size_t len)
@@ -101,12 +260,12 @@ constexpr std::uint64_t CityHash64(const char *s, size_t len)
       len <= 16 ?
       detail::HashLen0to16(s,len)
       :
-      1//HashLen17to32(s,len)
+      detail::HashLen17to32(s,len)
      )
      :
      (
       len <= 64 ?
-      1//HashLen33to64(s,len)
+      detail::HashLen33to64(s,len)
       : 
       throw std::invalid_argument("string may not be longer than 64 characters")
      )
