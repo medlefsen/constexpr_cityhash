@@ -228,6 +228,7 @@ namespace constexpr_cityhash
       return HashLen33to64_0(s,len);
     }
 
+  }
     constexpr uint64_t CityHash64(const char *s, size_t len)
     {
       return
@@ -254,7 +255,6 @@ namespace constexpr_cityhash
     {
       return CityHash64(s,N-1);
     }
-  }
 }
 
 #endif
