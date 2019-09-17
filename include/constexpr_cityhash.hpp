@@ -231,23 +231,54 @@ namespace constexpr_cityhash
   }
     constexpr uint64_t CityHash64(const char *s, size_t len)
     {
-      return
-        (
-         len <= 32 ?
-         (
-          len <= 16 ?
-          detail::HashLen0to16(s,len)
-          :
-          detail::HashLen17to32(s,len)
-         )
-         :
-         (
-          len <= 64 ?
-          detail::HashLen33to64(s,len)
-          : 
-          throw std::invalid_argument("string may not be longer than 64 characters")
-         )
-        );
+      if (len <= 32) {
+        if (len <= 16) {
+          return detail::HashLen0to16(s, len);
+        }
+        else {
+          return detail::HashLen17to32(s, len);
+        }
+      }
+      else if (len <= 64) {
+        return detail::HashLen33to64(s, len);
+      }
+
+      // For strings over 64 bytes we hash the end first, and then as we
+      // loop we keep 56 bytes of state: v, w, x, y, and z.
+      uint64 x = detail::load64(s + len - 40);
+      uint64 y = detail::load64(s + len - 16) + detail::load64(s + len - 56);
+      uint64 z = detail::HashLen16(detail::load64(s + len - 48) + len, detail::load64(s + len - 24));
+      std::pair<uint64, uint64> v = detail::WeakHashLen32WithSeeds(s + len - 64, len, z);
+      std::pair<uint64, uint64> w = detail::WeakHashLen32WithSeeds(s + len - 32, y + detail::k1, x);
+      x = x * detail::k1 + detail::load64(s);
+
+      // Decrease len to the nearest multiple of 64, and operate on 64-byte chunks.
+      len = (len - 1) & ~static_cast<size_t>(63);
+      do {
+        x = detail::Rotate(x + y + v.first + detail::load64(s + 8), 37) * detail::k1;
+        y = detail::Rotate(y + v.second + detail::load64(s + 48), 42) * detail::k1;
+        x ^= w.second;
+        y += v.first + detail::load64(s + 40);
+        z = detail::Rotate(z + w.first, 33) * detail::k1;
+
+        // Commented out is how the official version does it (https://github.com/google/cityhash/blob/master/src/city.cc),
+        // but std::pair::operator= is not constexpr at the moment.
+        //v = WeakHashLen32WithSeeds(s, v.second * detail::k1, x + w.first);
+        //w = WeakHashLen32WithSeeds(s + 32, z + w.second, y + detail::load64(s + 16));
+        std::pair<uint64, uint64> v2 = detail::WeakHashLen32WithSeeds(s, v.second * detail::k1, x + w.first);
+        std::pair<uint64, uint64> w2 = detail::WeakHashLen32WithSeeds(s + 32, z + w.second, y + detail::load64(s + 16));
+        v.first = v2.first;
+        v.second = v2.second;
+        w.first = w2.first;
+        w.second = w2.second;
+
+        detail::SwapValues(z, x);
+        s += 64;
+        len -= 64;
+      } while (len != 0);
+
+      return detail::HashLen16(detail::HashLen16(v.first, w.first) + detail::ShiftMix(y) * detail::k1 + z,
+        detail::HashLen16(v.second, w.second) + x);
     }
 
     template<size_t N>
